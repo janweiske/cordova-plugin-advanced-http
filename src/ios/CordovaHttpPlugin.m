@@ -19,10 +19,14 @@
 
 @implementation CordovaHttpPlugin {
     AFSecurityPolicy *securityPolicy;
+    NSMutableDictionary *taskIdentifiers;
+    int taskListCounter;
 }
 
 - (void)pluginInitialize {
     securityPolicy = [AFSecurityPolicy policyWithPinningMode:AFSSLPinningModeNone];
+    taskIdentifiers = [[NSMutableDictionary alloc] init];
+    taskListCounter = 0;
 }
 
 - (void)setRequestSerializer:(NSString*)serializerName forManager:(AFHTTPSessionManager*)manager {
@@ -297,21 +301,29 @@
     [[SDNetworkActivityIndicator sharedActivityIndicator] startActivity];
 
     @try {
-        [manager POST:url parameters:data success:^(NSURLSessionTask *task, id responseObject) {
-            NSMutableDictionary *dictionary = [NSMutableDictionary dictionary];
-            [self handleSuccess:dictionary withResponse:(NSHTTPURLResponse*)task.response andData:responseObject];
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            
+            int newTaskListCounter = ++taskListCounter;
+            UIBackgroundTaskIdentifier newTaskIdentifier = [self beginBackgroundUpdateTaskWithTaskListCounter:newTaskListCounter];
+            [taskIdentifiers setObject:[NSNumber numberWithUnsignedLong:newTaskIdentifier] forKey:[NSNumber numberWithUnsignedLong:newTaskListCounter]];
+            
+            [manager POST:url parameters:data success:^(NSURLSessionTask *task, id responseObject) {
+                NSMutableDictionary *dictionary = [NSMutableDictionary dictionary];
+                [self handleSuccess:dictionary withResponse:(NSHTTPURLResponse*)task.response andData:responseObject];
 
-            CDVPluginResult *pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsDictionary:dictionary];
-            [weakSelf.commandDelegate sendPluginResult:pluginResult callbackId:command.callbackId];
-            [[SDNetworkActivityIndicator sharedActivityIndicator] stopActivity];
-        } failure:^(NSURLSessionTask *task, NSError *error) {
-            NSMutableDictionary *dictionary = [NSMutableDictionary dictionary];
-            [self handleError:dictionary withResponse:(NSHTTPURLResponse*)task.response error:error];
+                CDVPluginResult *pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsDictionary:dictionary];
+                [weakSelf.commandDelegate sendPluginResult:pluginResult callbackId:command.callbackId];
+                [[SDNetworkActivityIndicator sharedActivityIndicator] stopActivity];
+            } failure:^(NSURLSessionTask *task, NSError *error) {
+                NSMutableDictionary *dictionary = [NSMutableDictionary dictionary];
+                [self handleError:dictionary withResponse:(NSHTTPURLResponse*)task.response error:error];
 
-            CDVPluginResult *pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsDictionary:dictionary];
-            [weakSelf.commandDelegate sendPluginResult:pluginResult callbackId:command.callbackId];
-            [[SDNetworkActivityIndicator sharedActivityIndicator] stopActivity];
-        }];
+                CDVPluginResult *pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsDictionary:dictionary];
+                [weakSelf.commandDelegate sendPluginResult:pluginResult callbackId:command.callbackId];
+                [[SDNetworkActivityIndicator sharedActivityIndicator] stopActivity];
+            }];
+            
+        }); //dispatch_async
     }
     @catch (NSException *exception) {
         [[SDNetworkActivityIndicator sharedActivityIndicator] stopActivity];
@@ -560,4 +572,17 @@
     }
 }
 
+- (UIBackgroundTaskIdentifier) beginBackgroundUpdateTaskWithTaskListCounter:(int)taskListIdentifier {
+    return [[UIApplication sharedApplication] beginBackgroundTaskWithExpirationHandler:^{
+        [self endBackgroundUpdateTaskWithIdentifier:taskListIdentifier];
+    }];
+}
+
+- (void) endBackgroundUpdateTaskWithIdentifier:(int)taskListIdentifier {
+    NSNumber *backgroundTaskIdentifier = [taskIdentifiers objectForKey:[NSNumber numberWithUnsignedLong:taskListIdentifier]];
+    if (taskListCounter) {
+        [[UIApplication sharedApplication] endBackgroundTask: [backgroundTaskIdentifier intValue]];
+        [taskIdentifiers removeObjectForKey:[NSNumber numberWithUnsignedLong:taskListIdentifier]];
+    }
+}
 @end
